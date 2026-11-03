@@ -30,6 +30,7 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
         self._host = vacuum_config.host
         self._mac = vacuum_config.device_info.mac
         self._wifi_info_sn = None
+        self._map_encryption_device_id = str(self._device_id)
 
         self._miot_device = MiotDevice(self._host, self._token, timeout=2)
 
@@ -102,17 +103,38 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
         if not self._wifi_info_sn:
             return True
         try:
-            self.map_data_parser.unpack_map(
-                raw_map,
-                wifi_sn=self._wifi_info_sn,
-                owner_id=str(self._user_id),
-                device_id=str(self._device_id),
-                model=self.model,
-                device_mac=self._mac,
-            )
+            self._unpack_map(raw_map)
         except (ValueError, zlib.error):
             return False
         return True
+
+    def _unpack_map(self, raw_map: bytes) -> bytes:
+        device_ids = [self._map_encryption_device_id]
+        cloud_device_id = str(self._device_id)
+        if cloud_device_id not in device_ids:
+            device_ids.append(cloud_device_id)
+        if is_K3_model(self.model) and "0" not in device_ids:
+            device_ids.append("0")
+
+        last_error: Exception | None = None
+        for device_id in device_ids:
+            try:
+                decoded_map = self.map_data_parser.unpack_map(
+                    raw_map,
+                    wifi_sn=self._wifi_info_sn,
+                    owner_id=str(self._user_id),
+                    device_id=device_id,
+                    model=self.model,
+                    device_mac=self._mac,
+                )
+                self._map_encryption_device_id = device_id
+                return decoded_map
+            except (ValueError, zlib.error) as ex:
+                last_error = ex
+
+        if last_error is not None:
+            raise last_error
+        raise ValueError("Could not decrypt IJAI map")
 
     async def _request_map_upload(self, upload_type: int = MAP_UPLOAD_REAL_MAP) -> None:
         try:
@@ -177,11 +199,5 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
                     _LOGGER.error("Failed to get wifi_sn from vacuum")
                     raise FailedConnectionException(ex)
 
-        decoded_map = self.map_data_parser.unpack_map(
-            raw_map,
-            wifi_sn=self._wifi_info_sn,
-            owner_id=str(self._user_id),
-            device_id=str(self._device_id),
-            model=self.model,
-            device_mac=self._mac)
+        decoded_map = self._unpack_map(raw_map)
         return self.map_data_parser.parse(decoded_map)
