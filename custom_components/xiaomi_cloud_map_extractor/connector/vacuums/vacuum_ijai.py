@@ -7,7 +7,7 @@ from miio.exceptions import DeviceException
 
 from vacuum_map_parser_base.map_data import MapData
 from vacuum_map_parser_ijai.map_data_parser import IjaiMapDataParser
-from vacuum_map_parser_ijai.status_mapping import get_status_mapping
+from vacuum_map_parser_ijai.status_mapping import get_status_mapping, is_K3_model
 from .base.vacuum_v2 import BaseXiaomiCloudVacuumV2
 from .base.model import VacuumConfig, VacuumApi
 from ..utils.exceptions import FailedConnectionException
@@ -17,7 +17,7 @@ OFF_UPDATES = 3
 
 
 class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
-    WIFI_INFO_SN_LEN = 18
+    WIFI_INFO_SN_POSSIBLE_LEN = [18, 20]
 
     def __init__(self, vacuum_config: VacuumConfig):
         super().__init__(vacuum_config)
@@ -71,21 +71,9 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
         return self._ijai_map_data_parser
 
     async def get_map_url(self, map_name: str) -> str | None:
-        url = self._connector.get_api_url(
-            self._server) + '/v2/home/get_interim_file_url_pro'
-        params = {
-            "data": f'{{"obj_name":"{self._user_id}/{self._device_id}/{map_name}"}}'
-        }
-        api_response = await self._connector.execute_api_call_encrypted(url, params)
-        if (
-                api_response is None
-                or "result" not in api_response
-                or api_response["result"] is None
-                or "url" not in api_response["result"]):
-            _LOGGER.debug(
-                f"API returned {api_response['code']}" + "(" + api_response["message"] + ")")
-            return None
-        return api_response["result"]["url"]
+        if is_K3_model(self.model):
+            return await self.get_fallback_map_url(map_name)
+        return await super().get_map_url(map_name)
 
     def get_wifi_info_sn(self):
         wifi_info_sn = None
@@ -98,7 +86,7 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
             data = self._miot_device.get_property_by(1, piid)
             if (
                     "value" in data[0]
-                    and len(data[0]["value"]) == self.WIFI_INFO_SN_LEN
+                    and len(data[0]["value"]) in self.WIFI_INFO_SN_POSSIBLE_LEN
                     and data[0]["value"].isalnum()
                     and data[0]["value"].isupper()):
                 wifi_info_sn = data[0]["value"]
@@ -115,7 +103,7 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
                     cleaned_prop = cleaned_prop.split(';')[0]
 
                 if (
-                        len(cleaned_prop) == self.WIFI_INFO_SN_LEN
+                        len(cleaned_prop) in self.WIFI_INFO_SN_POSSIBLE_LEN
                         and cleaned_prop.isalnum()
                         and cleaned_prop.isupper()):
                     wifi_info_sn = cleaned_prop
