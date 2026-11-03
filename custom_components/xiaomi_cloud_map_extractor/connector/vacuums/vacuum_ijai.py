@@ -1,5 +1,6 @@
-
+import asyncio
 import logging
+import zlib
 from typing import Self
 
 from miio.miot_device import MiotDevice
@@ -14,10 +15,14 @@ from ..utils.exceptions import FailedConnectionException
 
 _LOGGER = logging.getLogger(__name__)
 OFF_UPDATES = 3
+MAP_UPLOAD_REAL_MAP = 0
+MAP_UPLOAD_MEMORY_MAP = 1
+MAP_DOWNLOAD_ATTEMPTS = 3
+MAP_DOWNLOAD_RETRY_DELAY = 2
 
 
 class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
-    WIFI_INFO_SN_POSSIBLE_LEN = [18, 20]
+    WIFI_INFO_SN_POSSIBLE_LEN = [18, 19, 20]
 
     def __init__(self, vacuum_config: VacuumConfig):
         super().__init__(vacuum_config)
@@ -74,6 +79,57 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
         if is_K3_model(self.model):
             return await self.get_fallback_map_url(map_name)
         return await super().get_map_url(map_name)
+
+    async def get_raw_map_data(self, map_name: str | None) -> bytes | None:
+        if map_name is None:
+            return None
+
+        if not self._wifi_info_sn:
+            self._wifi_info_sn = self.get_wifi_info_sn()
+
+        await self._request_map_upload()
+        raw_map = None
+        for attempt in range(MAP_DOWNLOAD_ATTEMPTS):
+            raw_map = await super().get_raw_map_data(map_name)
+            if raw_map is None or self._can_unpack(raw_map):
+                return raw_map
+            if attempt + 1 < MAP_DOWNLOAD_ATTEMPTS:
+                await asyncio.sleep(MAP_DOWNLOAD_RETRY_DELAY)
+                await self._request_map_upload(MAP_UPLOAD_MEMORY_MAP)
+        return raw_map
+
+    def _can_unpack(self, raw_map: bytes) -> bool:
+        if not self._wifi_info_sn:
+            return True
+        try:
+            self.map_data_parser.unpack_map(
+                raw_map,
+                wifi_sn=self._wifi_info_sn,
+                owner_id=str(self._user_id),
+                device_id=str(self._device_id),
+                model=self.model,
+                device_mac=self._mac,
+            )
+        except (ValueError, zlib.error):
+            return False
+        return True
+
+    async def _request_map_upload(self, upload_type: int = MAP_UPLOAD_REAL_MAP) -> None:
+        try:
+            response = await self._connector.get_other_info(
+                self._device_id,
+                "action",
+                parameters={
+                    "did": self._device_id,
+                    "siid": 10,
+                    "aiid": 6,
+                    "in": [{"piid": 7, "value": upload_type}],
+                },
+            )
+            if response is not None and response.get("result", {}).get("code") == 0:
+                await asyncio.sleep(1)
+        except Exception as ex:
+            _LOGGER.debug("Map upload request failed: %r", ex)
 
     def get_wifi_info_sn(self):
         wifi_info_sn = None
