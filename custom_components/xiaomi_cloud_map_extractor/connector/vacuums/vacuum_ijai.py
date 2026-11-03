@@ -87,7 +87,6 @@ class IjaiCloudVacuum(BaseXiaomiCloudVacuumV2):
             if (
                     "value" in data[0]
                     and len(data[0]["value"]) in self.WIFI_INFO_SN_POSSIBLE_LEN
-                    and data[0]["value"].isalnum()
                     and data[0]["value"].isupper()):
                 wifi_info_sn = data[0]["value"]
                 break
